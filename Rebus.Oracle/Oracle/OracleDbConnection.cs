@@ -10,7 +10,7 @@ namespace Rebus.Oracle
     /// <summary>
     /// Wraps an opened <see cref="OracleConnection"/> and makes it easier to work with it
     /// </summary>
-    public class OracleDbConnection : IDisposable
+    public class OracleDbConnection : IDisposable 
     {
         readonly OracleConnection _currentConnection;
         OracleTransaction _currentTransaction;
