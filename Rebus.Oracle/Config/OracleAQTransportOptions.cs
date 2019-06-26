@@ -9,7 +9,11 @@
             DequeueOptions = new OracleAQDequeueOptions();
 
             MessageStorageType = AQMessageStorageType.Raw;
+
+            InitAQSchema = true;
         }
+
+        public bool InitAQSchema { get; set; }
 
         /// <summary>
         /// Specifies what data type to use for header and body storage. 

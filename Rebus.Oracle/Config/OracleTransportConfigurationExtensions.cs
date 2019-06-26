@@ -60,7 +60,6 @@ namespace Rebus.Config
             });
         }
 
-
         /// <summary>
         /// Configures Rebus to use Oracle as its transport. The table specified by <paramref name="tableName"/> will be used to
         /// store messages, and the "queue" specified by <paramref name="inputQueueName"/> will be used when querying for messages.
@@ -90,7 +89,11 @@ namespace Rebus.Config
                 var rebusLoggerFactory = context.Get<IRebusLoggerFactory>();
                 var connectionProvider = connectionProviderFactory(rebusLoggerFactory);
                 var transport = new OracleAQTransport(connectionProvider, options, rebusLoggerFactory);
-                transport.EnsureQueueIsCreated();
+                if(options.InitAQSchema)
+                {
+                    OracleAQSchemaInitializer oracleAQSchemaInitializer = new OracleAQSchemaInitializer(rebusLoggerFactory, connectionProvider);
+                    oracleAQSchemaInitializer.EnsureQueueIsCreated(new OracleAQInitializationOptions() { InputQueueName = options.InputQueueName, MessageStorageType = options.MessageStorageType, TableName = options.TableName });
+                }
                 return transport;
             });
 

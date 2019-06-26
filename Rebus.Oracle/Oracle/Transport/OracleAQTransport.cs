@@ -32,8 +32,10 @@ namespace Rebus.Oracle.Transport
 
         readonly OracleConnectionHelper _connectionHelper;
         readonly OracleAQTransportOptions _options;
-        readonly AsyncBottleneck _receiveBottleneck = new AsyncBottleneck(20);
         readonly ILog _log;
+        readonly string _sendCommandText;
+        readonly string _receiveCommandText;
+        
 
         /// <summary>
         /// Header key of message priority which happens to be supported by this transport
@@ -63,42 +65,7 @@ namespace Rebus.Oracle.Transport
             if (_options.DequeueOptions == null) throw new ArgumentNullException(nameof(_options.DequeueOptions));
             if (_options.EnqueueOptions == null) throw new ArgumentNullException(nameof(_options.EnqueueOptions));
 
-        }
-
-        /// <summary>The SQL transport doesn't really have queues, so this function does nothing</summary>
-        public void CreateQueue(string address)
-        {
-        }
-
-        /// <inheritdoc />
-        public async Task Send(string destinationAddress, TransportMessage message, ITransactionContext context)
-        {
-            //Stopwatch stopwatch = Stopwatch.StartNew();
-
-            var connection = await GetConnection(context);
-            var semaphore = connection.Semaphore;
-
-            // serialize access to the connection
-            await semaphore.WaitAsync();
-
-            try
-            {
-                await InnerSend(destinationAddress, message, connection);
-            }
-            finally
-            {
-                semaphore.Release();
-            }
-
-            //_log.Warn("SendTime = {0}, {1}", stopwatch.ElapsedMilliseconds, DateTime.Now);
-        }
-
-        async Task InnerSend(string destinationAddress, TransportMessage message, ConnectionWrapper connection)
-        {
-            Debugger.Launch();
-            using (var command = connection.Connection.CreateCommand())
-            {
-                command.CommandText = $@"
+            _sendCommandText = $@"
                     DECLARE
                         enqueue_options     dbms_aq.enqueue_options_t;
                         message_properties  dbms_aq.message_properties_t;
@@ -117,9 +84,64 @@ namespace Rebus.Oracle.Transport
                         QUEUE_NAME => :queue_name,
                         ENQUEUE_OPTIONS => enqueue_options,
                         MESSAGE_PROPERTIES => message_properties,
-                        PAYLOAD => new REBUS_MESSAGE_T(:header, :body),
+                        PAYLOAD => new {OracleAQSchemaInitializer.GetRebusMessageTypeName(_options.MessageStorageType)}(:header, :body),
                         MSGID => message_handle);
                     END;";
+
+            _receiveCommandText = $@"
+                    DECLARE 
+                       dequeue_options      dbms_aq.DEQUEUE_OPTIONS_T;
+                       message_properties   dbms_aq.message_properties_t;
+                       payload              {OracleAQSchemaInitializer.GetRebusMessageTypeName(_options.MessageStorageType)};
+                       message_handle       RAW(16);
+                    BEGIN
+                        
+                    dequeue_options.visibility      := {GetVisibility(_options.DequeueOptions.Visibility)};
+                    dequeue_options.delivery_mode   := {GetDequeueDeliveryMode(_options.DequeueOptions.DeliveryMode)};
+                    dequeue_options.transformation  := '{_options.DequeueOptions.Tranformation}';
+                    dequeue_options.WAIT            := :wait;
+                        
+                        DBMS_AQ.DEQUEUE(
+                            QUEUE_NAME => :queue_name,
+                            DEQUEUE_OPTIONS => dequeue_options,
+                            MESSAGE_PROPERTIES => message_properties,
+                            PAYLOAD => payload,
+                            MSGID => message_handle);
+                        
+                        :header := payload.HEADER;
+                        :body   := payload.BODY;
+                    END; ";
+        }
+
+        /// <summary>The SQL transport doesn't really have queues, so this function does nothing</summary>
+        public void CreateQueue(string address)
+        {
+        }
+
+        /// <inheritdoc />
+        public async Task Send(string destinationAddress, TransportMessage message, ITransactionContext context)
+        {
+            var connection = await GetConnection(context);
+            var semaphore = connection.Semaphore;
+
+            // serialize access to the connection
+            await semaphore.WaitAsync();
+
+            try
+            {
+                await InnerSend(destinationAddress, message, connection);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
+
+        async Task InnerSend(string destinationAddress, TransportMessage message, ConnectionWrapper connection)
+        {
+            using (var command = connection.Connection.CreateCommand())
+            {
+                command.CommandText = _sendCommandText;
 
                 command.CommandType = CommandType.Text;
 
@@ -162,201 +184,77 @@ namespace Rebus.Oracle.Transport
         /// <inheritdoc />
         public async Task<TransportMessage> Receive(ITransactionContext context, CancellationToken cancellationToken)
         {
-            using (await _receiveBottleneck.Enter(cancellationToken))
+            OracleParameter headerParam, bodyParam;
+            var connection = await GetConnection(context);
+
+            TransportMessage receivedTransportMessage;
+
+            using (var command = connection.Connection.CreateCommand())
             {
-                OracleParameter headerParam, bodyParam;
-                var connection = await GetConnection(context);
+                command.CommandText = _receiveCommandText;
 
-                TransportMessage receivedTransportMessage;
+                command.CommandType = CommandType.Text;
 
-                using (var command = connection.Connection.CreateCommand())
+                command.Parameters.Add(new OracleParameter("wait", OracleDbType.Int32, _options.DequeueOptions.Wait, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, _options.InputQueueName, ParameterDirection.Input));
+
+                if (_options.MessageStorageType == AQMessageStorageType.Raw)
                 {
-                    command.CommandText = $@"
-                    DECLARE 
-                       dequeue_options      dbms_aq.DEQUEUE_OPTIONS_T;
-                       message_properties   dbms_aq.message_properties_t;
-                       payload              REBUS_MESSAGE_T;
-                       message_handle       RAW(16);
-                    BEGIN
-                        
-                    dequeue_options.visibility      := {GetVisibility(_options.DequeueOptions.Visibility)};
-                    dequeue_options.delivery_mode   := {GetDequeueDeliveryMode(_options.DequeueOptions.DeliveryMode)};
-                    dequeue_options.transformation  := '{_options.DequeueOptions.Tranformation}';
-                    dequeue_options.WAIT            := :wait;
-                        
-                        DBMS_AQ.DEQUEUE(
-                            QUEUE_NAME => :queue_name,
-                            DEQUEUE_OPTIONS => dequeue_options,
-                            MESSAGE_PROPERTIES => message_properties,
-                            PAYLOAD => payload,
-                            MSGID => message_handle);
-                        
-                        :header := payload.HEADER;
-                        :body   := payload.BODY;
-                    END; ";
+                    command.Parameters.Add(headerParam = new OracleParameter("header", OracleDbType.Raw, ParameterDirection.Output));
+                    headerParam.Size = 2000;
 
-                    command.CommandType = CommandType.Text;
+                    command.Parameters.Add(bodyParam = new OracleParameter("body", OracleDbType.Raw, ParameterDirection.Output));
+                    bodyParam.Size = 2000;
+                }
+                else
+                {
+                    command.Parameters.Add(headerParam = new OracleParameter("header", OracleDbType.Blob, ParameterDirection.Output));
+                    command.Parameters.Add(bodyParam = new OracleParameter("body", OracleDbType.Blob, ParameterDirection.Output));
 
-                    command.Parameters.Add(new OracleParameter("wait", OracleDbType.Int32, _options.DequeueOptions.Wait, ParameterDirection.Input));
-                    command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, _options.InputQueueName, ParameterDirection.Input));
+                }
+                command.InitialLOBFetchSize = -1;
+                command.InitialLONGFetchSize = -1;
+                try
+                {
+                    await command.ExecuteNonQueryAsync();
+
+                    byte[] header, body;
 
                     if (_options.MessageStorageType == AQMessageStorageType.Raw)
                     {
-                        command.Parameters.Add(headerParam = new OracleParameter("header", OracleDbType.Raw, ParameterDirection.Output));
-                        headerParam.Size = 2000;
-
-                        command.Parameters.Add(bodyParam = new OracleParameter("body", OracleDbType.Raw, ParameterDirection.Output));
-                        bodyParam.Size = 2000;
+                        header = ((OracleBinary)headerParam.Value).Value;
+                        body = ((OracleBinary)bodyParam.Value).Value;
                     }
                     else
                     {
-                        command.Parameters.Add(headerParam = new OracleParameter("header", OracleDbType.Blob, ParameterDirection.Output));
-                        command.Parameters.Add(bodyParam = new OracleParameter("body", OracleDbType.Blob, ParameterDirection.Output));
-                        
+                        header = (headerParam.Value as OracleBlob).Value;
+                        body = (bodyParam.Value as OracleBlob).Value;
                     }
-                    command.InitialLOBFetchSize = -1;
-                    try
-                    {
-                        command.ExecuteNonQuery();
 
-                        byte[] header, body;
-
-                        if (_options.MessageStorageType == AQMessageStorageType.Raw)
-                        {
-                            header = ((OracleBinary)headerParam.Value).Value;
-                            body = ((OracleBinary)bodyParam.Value).Value;
-                        }
-                        else
-                        {
-                            header = (headerParam.Value as OracleBlob).Value;
-                            body = (bodyParam.Value as OracleBlob).Value;
-                        }
-
-                        receivedTransportMessage = new TransportMessage(HeaderSerializer.Deserialize(header), body);
-                    }
-                    catch(OracleException oracleException)
-                    {
-                        if (oracleException.Number == TimeOutOrEndOfFethNumber)
-                            receivedTransportMessage = null;
-                        else
-                            throw;
-                    }
-                    catch (SqlException sqlException) when (sqlException.Number == OperationCancelledNumber)
-                    {
-                        // ADO.NET does not throw the right exception when the task gets cancelled - therefore we need to do this:
-                        throw new TaskCanceledException("Receive operation was cancelled", sqlException);
-                    }
+                    receivedTransportMessage = new TransportMessage(HeaderSerializer.Deserialize(header), body);
                 }
-                
-                return receivedTransportMessage;
+                catch (OracleException oracleException)
+                {
+                    if (oracleException.Number == TimeOutOrEndOfFethNumber)
+                        receivedTransportMessage = null;
+                    else
+                        throw;
+                }
+
+                catch (SqlException sqlException) when (sqlException.Number == OperationCancelledNumber)
+                {
+                    // ADO.NET does not throw the right exception when the task gets cancelled - therefore we need to do this:
+                    throw new TaskCanceledException("Receive operation was cancelled", sqlException);
+                }
             }
+
+            return receivedTransportMessage;
         }
 
         /// <summary>
         /// Gets the address of the transport
         /// </summary>
         public string Address => _options.InputQueueName;
-
-        /// <summary>
-        /// Creates the necessary table
-        /// </summary>
-        public void EnsureQueueIsCreated()
-        {
-            try
-            {
-                CreateSchema();
-            }
-            catch (Exception exception)
-            {
-                throw new RebusApplicationException(exception, $"Error attempting to initialize SQL transport schema with mesages table [dbo].[{_options.TableName}]");
-            }
-        }
-
-        void CreateSchema()
-        {
-            using (var connection = _connectionHelper.GetConnection())
-            {
-                var tableNames = connection.GetTableNames();
-
-                if (tableNames.Contains(_options.TableName, StringComparer.OrdinalIgnoreCase))
-                {
-                    _log.Info("Database already contains a table named {tableName} - will not create anything", _options.TableName);
-                    return;
-                }
-
-                _log.Info("Table {tableName} does not exist - it will be created now", _options.TableName);
-
-                ExecuteCommands(connection, $@"
-
-                    CREATE OR REPLACE TYPE REBUS_MESSAGE_T AS OBJECT (
-                    HEADER           {(_options.MessageStorageType == AQMessageStorageType.Raw ? "RAW(2000)" : "BLOB")},
-                    BODY             {(_options.MessageStorageType == AQMessageStorageType.Raw ? "RAW(2000)" : "BLOB")}
-                    );
-
-                    ----
-                    begin
-                    -- Call the procedure
-                        sys.dbms_aqadm.create_queue_table(queue_table => '{_options.TableName}',
-                                                        queue_payload_type => 'REBUS_MESSAGE_T', 
-                                                        primary_instance => 1);
-                                    
-                        sys.dbms_aqadm.create_queue(queue_name => '{_options.InputQueueName}',
-                                                    queue_table => '{_options.TableName}',
-                                                    max_retries => 10, 
-                                                    retry_delay => 30);
-
-                        sys.dbms_aqadm.start_queue(queue_name => '{_options.InputQueueName}');
-                    end;
-                ");
-
-                connection.Complete();
-            }
-        }
-
-        static void ExecuteCommands(OracleDbConnection connection, string sqlCommands)
-        {
-            foreach (var sqlCommand in sqlCommands.Split(new[] { "----" }, StringSplitOptions.RemoveEmptyEntries))
-            {
-                using (var command = connection.CreateCommand())
-                {
-                    command.CommandText = sqlCommand;
-
-                    Execute(command);
-                }
-            }
-        }
-
-        static void Execute(IDbCommand command)
-        {
-            try
-            {
-                command.ExecuteNonQuery();
-            }
-            catch (OracleException exception)
-            {
-                throw new RebusApplicationException(exception, $@"Error executing SQL command
-{command.CommandText}
-");
-            }
-        }
-
-        class ConnectionWrapper : IDisposable
-        {
-            public ConnectionWrapper(OracleDbConnection connection)
-            {
-                Connection = connection;
-                Semaphore = new SemaphoreSlim(1, 1);
-            }
-
-            public OracleDbConnection Connection { get; }
-            public SemaphoreSlim Semaphore { get; }
-
-            public void Dispose()
-            {
-                Connection?.Dispose();
-                Semaphore?.Dispose();
-            }
-        }
 
         Task<ConnectionWrapper> GetConnection(ITransactionContext context)
         {
@@ -376,7 +274,6 @@ namespace Rebus.Oracle.Transport
                         return connectionWrapper;
                     });
         }
-
 
         /// <inheritdoc />
         public void Dispose()
