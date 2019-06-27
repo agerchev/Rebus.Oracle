@@ -14,15 +14,7 @@ namespace Rebus.Oracle.Transport
     {
         public OracleAQInitializationOptions()
         {
-            MessageStorageType = AQMessageStorageType.Blob;
         }
-
-        /// <summary>
-        /// Specifies what data type to use for header and body storage. 
-        /// Raw is faster, can be used with buffered messages but is limited to 2000 bytes for header and body each.
-        /// Blob has a much bigger limit (4 GB - 1) * DB_BLOCK_SIZE initialization parameter (8 TB to 128 TB).
-        /// </summary>
-        public AQMessageStorageType MessageStorageType { get; set; }
 
         public string TableName { get; set; }
         public string InputQueueName { get; set; }
@@ -69,16 +61,18 @@ namespace Rebus.Oracle.Transport
 
                 ExecuteCommands(connection, $@"
 
-                    CREATE OR REPLACE TYPE {GetRebusMessageTypeName(options.MessageStorageType)} AS OBJECT (
-                    HEADER           {(options.MessageStorageType == AQMessageStorageType.Raw ? "RAW(2000)" : "BLOB")},
-                    BODY             {(options.MessageStorageType == AQMessageStorageType.Raw ? "RAW(2000)" : "BLOB")}
+                    CREATE OR REPLACE TYPE REBUS_MESSAGE AS OBJECT (
+                        HEADER_RAW      RAW(2000),
+                        HEADER_BLOB     BLOB,
+                        BODY_RAW        RAW(2000),
+                        BODY_BLOB       BLOB
                     );
 
                     ----
                     begin
                     -- Call the procedure
                         sys.dbms_aqadm.create_queue_table(queue_table => '{options.TableName}',
-                                                        queue_payload_type => '{GetRebusMessageTypeName(options.MessageStorageType)}', 
+                                                        queue_payload_type => 'REBUS_MESSAGE', 
                                                         primary_instance => 1);
                                     
                         sys.dbms_aqadm.create_queue(queue_name => '{options.InputQueueName}',
@@ -119,14 +113,6 @@ namespace Rebus.Oracle.Transport
 {command.CommandText}
 ");
             }
-        }
-
-        internal static string GetRebusMessageTypeName(AQMessageStorageType aQMessageStorageType)
-        {
-            if (aQMessageStorageType == AQMessageStorageType.Raw)
-                return "REBUS_MESSAGE_RAW";
-            else
-                return "REBUS_MESSAGE_BLOB";
         }
     }
 }

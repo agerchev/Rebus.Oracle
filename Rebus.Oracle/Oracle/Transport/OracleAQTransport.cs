@@ -84,7 +84,7 @@ namespace Rebus.Oracle.Transport
                         QUEUE_NAME => :queue_name,
                         ENQUEUE_OPTIONS => enqueue_options,
                         MESSAGE_PROPERTIES => message_properties,
-                        PAYLOAD => new {OracleAQSchemaInitializer.GetRebusMessageTypeName(_options.MessageStorageType)}(:header, :body),
+                        PAYLOAD => new REBUS_MESSAGE(:header_raw, :header_blob, :body_raw, :body_blob),
                         MSGID => message_handle);
                     END;";
 
@@ -92,7 +92,7 @@ namespace Rebus.Oracle.Transport
                     DECLARE 
                        dequeue_options      dbms_aq.DEQUEUE_OPTIONS_T;
                        message_properties   dbms_aq.message_properties_t;
-                       payload              {OracleAQSchemaInitializer.GetRebusMessageTypeName(_options.MessageStorageType)};
+                       payload              REBUS_MESSAGE;
                        message_handle       RAW(16);
                     BEGIN
                         
@@ -108,12 +108,14 @@ namespace Rebus.Oracle.Transport
                             PAYLOAD => payload,
                             MSGID => message_handle);
                         
-                        :header := payload.HEADER;
-                        :body   := payload.BODY;
+                        :header_raw     := payload.HEADER_RAW;
+                        :header_blob    := payload.HEADER_BLOB;
+                        :body_raw       := payload.BODY_RAW;
+                        :body_blob      := payload.BODY_BLOB;
                     END; ";
         }
 
-        /// <summary>The SQL transport doesn't really have queues, so this function does nothing</summary>
+        /// <summary>It can be implemented in some time.</summary>
         public void CreateQueue(string address)
         {
         }
@@ -139,6 +141,8 @@ namespace Rebus.Oracle.Transport
 
         async Task InnerSend(string destinationAddress, TransportMessage message, ConnectionWrapper connection)
         {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+
             using (var command = connection.Connection.CreateCommand())
             {
                 command.CommandText = _sendCommandText;
@@ -162,29 +166,25 @@ namespace Rebus.Oracle.Transport
 
                 command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, destinationAddress, ParameterDirection.Input));
 
-                if (_options.MessageStorageType == AQMessageStorageType.Raw)
-                {
-                    if (serializedHeaders.Length > 2000 ||
-                        message.Body.Length > 2000)
-                        throw new NotSupportedException("Message body or header size is greater than 2000 bytes, use blob for message storage type");
+                bool storeHeaderInRaw = serializedHeaders.Length <= 2000 && !_options.ForceBlobStore;
+                bool storeBodyInRaw = message.Body.Length <= 2000 && !_options.ForceBlobStore;
 
-                    command.Parameters.Add(new OracleParameter("header", OracleDbType.Raw, serializedHeaders, ParameterDirection.Input));
-                    command.Parameters.Add(new OracleParameter("body", OracleDbType.Raw, message.Body, ParameterDirection.Input));
-                }
-                else
-                {
-                    command.Parameters.Add(new OracleParameter("header", OracleDbType.Blob, serializedHeaders, ParameterDirection.Input));
-                    command.Parameters.Add(new OracleParameter("body", OracleDbType.Blob, message.Body, ParameterDirection.Input));
-                }
+                command.Parameters.Add(new OracleParameter("header_raw", OracleDbType.Raw, storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("header_blob", OracleDbType.Blob, !storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
+
+                command.Parameters.Add(new OracleParameter("body_raw", OracleDbType.Raw, storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("body_blob", OracleDbType.Blob, !storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
 
                 await command.ExecuteNonQueryAsync();
             }
+            //Console.WriteLine("SendTime={0}", stopwatch.ElapsedMilliseconds);
         }
 
         /// <inheritdoc />
         public async Task<TransportMessage> Receive(ITransactionContext context, CancellationToken cancellationToken)
         {
-            OracleParameter headerParam, bodyParam;
+            OracleParameter headerRawParam, headerBlobParam, bodyRawParam, bodyBlobParam;
+
             var connection = await GetConnection(context);
 
             TransportMessage receivedTransportMessage;
@@ -198,20 +198,14 @@ namespace Rebus.Oracle.Transport
                 command.Parameters.Add(new OracleParameter("wait", OracleDbType.Int32, _options.DequeueOptions.Wait, ParameterDirection.Input));
                 command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, _options.InputQueueName, ParameterDirection.Input));
 
-                if (_options.MessageStorageType == AQMessageStorageType.Raw)
-                {
-                    command.Parameters.Add(headerParam = new OracleParameter("header", OracleDbType.Raw, ParameterDirection.Output));
-                    headerParam.Size = 2000;
+                command.Parameters.Add(headerRawParam = new OracleParameter("header_raw", OracleDbType.Raw, ParameterDirection.Output));
+                headerRawParam.Size = 2000;
+                command.Parameters.Add(headerBlobParam = new OracleParameter("header_blob", OracleDbType.Blob, ParameterDirection.Output));
 
-                    command.Parameters.Add(bodyParam = new OracleParameter("body", OracleDbType.Raw, ParameterDirection.Output));
-                    bodyParam.Size = 2000;
-                }
-                else
-                {
-                    command.Parameters.Add(headerParam = new OracleParameter("header", OracleDbType.Blob, ParameterDirection.Output));
-                    command.Parameters.Add(bodyParam = new OracleParameter("body", OracleDbType.Blob, ParameterDirection.Output));
+                command.Parameters.Add(bodyRawParam = new OracleParameter("body_raw", OracleDbType.Raw, ParameterDirection.Output));
+                bodyRawParam.Size = 2000;
+                command.Parameters.Add(bodyBlobParam = new OracleParameter("body_blob", OracleDbType.Blob, ParameterDirection.Output));
 
-                }
                 command.InitialLOBFetchSize = -1;
                 command.InitialLONGFetchSize = -1;
                 try
@@ -220,16 +214,14 @@ namespace Rebus.Oracle.Transport
 
                     byte[] header, body;
 
-                    if (_options.MessageStorageType == AQMessageStorageType.Raw)
-                    {
-                        header = ((OracleBinary)headerParam.Value).Value;
-                        body = ((OracleBinary)bodyParam.Value).Value;
-                    }
-                    else
-                    {
-                        header = (headerParam.Value as OracleBlob).Value;
-                        body = (bodyParam.Value as OracleBlob).Value;
-                    }
+                    OracleBinary headerBinary = (OracleBinary)headerRawParam.Value;
+                    OracleBlob headerBlob = (OracleBlob)headerBlobParam.Value;
+
+                    OracleBinary bodyBinary = ((OracleBinary)bodyRawParam.Value);
+                    OracleBlob bodyBlob = (OracleBlob)bodyBlobParam.Value;
+
+                    header = headerBinary.IsNull ? headerBlob.Value : headerBinary.Value;
+                    body = bodyBinary.IsNull ? bodyBlob.Value : bodyBinary.Value;
 
                     receivedTransportMessage = new TransportMessage(HeaderSerializer.Deserialize(header), body);
                 }

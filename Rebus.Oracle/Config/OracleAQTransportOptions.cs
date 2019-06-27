@@ -4,39 +4,25 @@
     {
         public OracleAQTransportOptions()
         {
+            ForceBlobStore = false;
+
+            InitAQSchema = false;
+
             EnqueueOptions = new OracleAQEnqueueOptions();
             
             DequeueOptions = new OracleAQDequeueOptions();
-
-            MessageStorageType = AQMessageStorageType.Raw;
-
-            InitAQSchema = true;
         }
 
+        /// <summary>
+        /// Forces the transport to store the header and body in blob. Otherwise if header or body is smaller than 2000 bytes it will be stored in raw field.
+        /// </summary>
+        public bool ForceBlobStore { get; set; }
         public bool InitAQSchema { get; set; }
 
-        /// <summary>
-        /// Specifies what data type to use for header and body storage. 
-        /// Raw is faster, can be used with buffered messages but is limited to 2000 bytes for header and body each.
-        /// Blob has a much bigger limit (4 GB - 1) * DB_BLOCK_SIZE initialization parameter (8 TB to 128 TB).
-        /// </summary>
-        public AQMessageStorageType MessageStorageType { get; set; }
         public OracleAQEnqueueOptions EnqueueOptions { get; set; }
         public OracleAQDequeueOptions DequeueOptions { get; set; }
         public string TableName { get; set; }
         public string InputQueueName { get; set; }
-    }
-
-    public enum AQMessageStorageType
-    {
-        /// <summary>
-        /// Saves the message body and headers in a raw field. Maximum size: 2000 bytes
-        /// </summary>
-        Raw,
-        /// <summary>
-        /// Saves the message body and headers in a blob field. Maximum size: (4 GB - 1) * DB_BLOCK_SIZE initialization parameter (8 TB to 128 TB)
-        /// </summary>
-        Blob
     }
 
     public enum AQVisibility

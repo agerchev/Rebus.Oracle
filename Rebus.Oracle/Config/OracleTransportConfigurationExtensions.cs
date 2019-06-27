@@ -92,7 +92,7 @@ namespace Rebus.Config
                 if(options.InitAQSchema)
                 {
                     OracleAQSchemaInitializer oracleAQSchemaInitializer = new OracleAQSchemaInitializer(rebusLoggerFactory, connectionProvider);
-                    oracleAQSchemaInitializer.EnsureQueueIsCreated(new OracleAQInitializationOptions() { InputQueueName = options.InputQueueName, MessageStorageType = options.MessageStorageType, TableName = options.TableName });
+                    oracleAQSchemaInitializer.EnsureQueueIsCreated(new OracleAQInitializationOptions() { InputQueueName = options.InputQueueName, TableName = options.TableName });
                 }
                 return transport;
             });
