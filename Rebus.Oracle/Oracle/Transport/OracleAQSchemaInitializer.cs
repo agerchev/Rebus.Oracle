@@ -62,8 +62,8 @@ namespace Rebus.Oracle.Transport
                 ExecuteCommands(connection, $@"
 
                     CREATE OR REPLACE TYPE REBUS_MESSAGE AS OBJECT (
-                        HEADER_RAW      RAW(2000),
-                        HEADER_BLOB     BLOB,
+                        HEADERS_RAW     RAW(2000),
+                        HEADERS_BLOB    BLOB,
                         BODY_RAW        RAW(2000),
                         BODY_BLOB       BLOB
                     );

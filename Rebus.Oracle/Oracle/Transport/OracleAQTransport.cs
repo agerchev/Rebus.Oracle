@@ -84,7 +84,7 @@ namespace Rebus.Oracle.Transport
                         QUEUE_NAME => :queue_name,
                         ENQUEUE_OPTIONS => enqueue_options,
                         MESSAGE_PROPERTIES => message_properties,
-                        PAYLOAD => new REBUS_MESSAGE(:header_raw, :header_blob, :body_raw, :body_blob),
+                        PAYLOAD => new REBUS_MESSAGE(:headers_raw, :headers_blob, :body_raw, :body_blob),
                         MSGID => message_handle);
                     END;";
 
@@ -108,8 +108,8 @@ namespace Rebus.Oracle.Transport
                             PAYLOAD => payload,
                             MSGID => message_handle);
                         
-                        :header_raw     := payload.HEADER_RAW;
-                        :header_blob    := payload.HEADER_BLOB;
+                        :headers_raw     := payload.HEADERS_RAW;
+                        :headers_blob    := payload.HEADERS_BLOB;
                         :body_raw       := payload.BODY_RAW;
                         :body_blob      := payload.BODY_BLOB;
                     END; ";
@@ -141,8 +141,6 @@ namespace Rebus.Oracle.Transport
 
         async Task InnerSend(string destinationAddress, TransportMessage message, ConnectionWrapper connection)
         {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-
             using (var command = connection.Connection.CreateCommand())
             {
                 command.CommandText = _sendCommandText;
@@ -169,15 +167,14 @@ namespace Rebus.Oracle.Transport
                 bool storeHeaderInRaw = serializedHeaders.Length <= 2000 && !_options.ForceBlobStore;
                 bool storeBodyInRaw = message.Body.Length <= 2000 && !_options.ForceBlobStore;
 
-                command.Parameters.Add(new OracleParameter("header_raw", OracleDbType.Raw, storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
-                command.Parameters.Add(new OracleParameter("header_blob", OracleDbType.Blob, !storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("headers_raw", OracleDbType.Raw, storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("headers_blob", OracleDbType.Blob, !storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
 
                 command.Parameters.Add(new OracleParameter("body_raw", OracleDbType.Raw, storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
                 command.Parameters.Add(new OracleParameter("body_blob", OracleDbType.Blob, !storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
 
                 await command.ExecuteNonQueryAsync();
             }
-            //Console.WriteLine("SendTime={0}", stopwatch.ElapsedMilliseconds);
         }
 
         /// <inheritdoc />
@@ -198,9 +195,9 @@ namespace Rebus.Oracle.Transport
                 command.Parameters.Add(new OracleParameter("wait", OracleDbType.Int32, _options.DequeueOptions.Wait, ParameterDirection.Input));
                 command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, _options.InputQueueName, ParameterDirection.Input));
 
-                command.Parameters.Add(headerRawParam = new OracleParameter("header_raw", OracleDbType.Raw, ParameterDirection.Output));
+                command.Parameters.Add(headerRawParam = new OracleParameter("headers_raw", OracleDbType.Raw, ParameterDirection.Output));
                 headerRawParam.Size = 2000;
-                command.Parameters.Add(headerBlobParam = new OracleParameter("header_blob", OracleDbType.Blob, ParameterDirection.Output));
+                command.Parameters.Add(headerBlobParam = new OracleParameter("headers_blob", OracleDbType.Blob, ParameterDirection.Output));
 
                 command.Parameters.Add(bodyRawParam = new OracleParameter("body_raw", OracleDbType.Raw, ParameterDirection.Output));
                 bodyRawParam.Size = 2000;
@@ -210,6 +207,7 @@ namespace Rebus.Oracle.Transport
                 command.InitialLONGFetchSize = -1;
                 try
                 {
+                    /*We are not using the cancellationToken, bacause the driver is not implementing true async support yet. On cancel the process hangs */
                     await command.ExecuteNonQueryAsync();
 
                     byte[] header, body;
