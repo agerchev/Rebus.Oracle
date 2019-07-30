@@ -57,19 +57,29 @@ namespace Rebus.Oracle.Transport
                     return;
                 }
 
-                _log.Info("Table {tableName} does not exist - it will be created now", options.TableName);
+                _log.Info("Table {tableName} does not exist - it will be created with the queue now", options.TableName);
 
                 ExecuteCommands(connection, $@"
+                    DECLARE
+                        v_count NUMBER(10);
+                    BEGIN
+                        SELECT COUNT(*) INTO v_count
+                        FROM user_objects
+                        WHERE 
+                             object_type = 'TYPE'
+                         AND UPPER(object_name) = 'REBUS_MESSAGE';
 
-                    CREATE OR REPLACE TYPE REBUS_MESSAGE AS OBJECT (
-                        HEADERS_RAW     RAW(2000),
-                        HEADERS_BLOB    BLOB,
-                        BODY_RAW        RAW(2000),
-                        BODY_BLOB       BLOB
-                    );
-
+                        IF v_count = 0 THEN
+                            EXECUTE IMMEDIATE 'CREATE OR REPLACE TYPE REBUS_MESSAGE AS OBJECT (
+                                            HEADERS_RAW     RAW(2000),
+                                            HEADERS_BLOB    BLOB,
+                                            BODY_RAW        RAW(2000),
+                                            BODY_BLOB       BLOB
+                                        );';
+                        END IF;
+                    END;
                     ----
-                    begin
+                    BEGIN
                     -- Call the procedure
                         sys.dbms_aqadm.create_queue_table(queue_table => '{options.TableName}',
                                                         queue_payload_type => 'REBUS_MESSAGE', 
@@ -78,10 +88,10 @@ namespace Rebus.Oracle.Transport
                         sys.dbms_aqadm.create_queue(queue_name => '{options.InputQueueName}',
                                                     queue_table => '{options.TableName}',
                                                     max_retries => 10, 
-                                                    retry_delay => 30);
+                                                    retry_delay => 3);
 
                         sys.dbms_aqadm.start_queue(queue_name => '{options.InputQueueName}');
-                    end;
+                    END;
                 ");
 
                 connection.Complete();
