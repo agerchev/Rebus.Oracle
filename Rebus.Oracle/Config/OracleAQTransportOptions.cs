@@ -1,6 +1,6 @@
 ﻿namespace Rebus.Config
 {
-    public class OracleAQTransportOptions
+    public class OracleAQTransportOptions 
     {
         public OracleAQTransportOptions()
         {
@@ -68,6 +68,7 @@
         public enum AQDeliveryMode
         {
             Buffered,
+            //Т
             Persistent, 
             PersistentOrBuffered
         }
