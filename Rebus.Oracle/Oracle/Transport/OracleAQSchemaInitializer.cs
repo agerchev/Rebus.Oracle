@@ -67,22 +67,225 @@ namespace Rebus.Oracle.Transport
                         FROM user_objects
                         WHERE 
                              object_type = 'TYPE'
-                         AND UPPER(object_name) = 'REBUS_MESSAGE';
+                         AND UPPER(object_name) = 'REBUS_MESSAGE_V2';
 
                         IF v_count = 0 THEN
-                            EXECUTE IMMEDIATE 'CREATE OR REPLACE TYPE REBUS_MESSAGE AS OBJECT (
-                                            HEADERS_RAW     RAW(2000),
-                                            HEADERS_BLOB    BLOB,
-                                            BODY_RAW        RAW(2000),
-                                            BODY_BLOB       BLOB
+                            EXECUTE IMMEDIATE 'CREATE OR REPLACE TYPE REBUS_MSG_HEADER AS OBJECT (
+                                           KEY VARCHAR2(4000),
+                                           VALUE VARCHAR2(4000)
                                         );';
+
+                            EXECUTE IMMEDIATE 'CREATE OR REPLACE TYPE REBUS_MSG_HEADERS IS VARRAY(100) OF REBUS_MSG_HEADER NOT NULL;';
+
+
+                            EXECUTE IMMEDIATE 'create or replace type REBUS_MESSAGE_V2 as object
+                                                (
+                                                      HEADERS         REBUS_MSG_HEADERS,                                           
+                                                      BODY_RAW        RAW(2000),
+                                                      BODY_BLOB       BLOB,
+                                                      MEMBER FUNCTION ContainsHeader(p_header_key VARCHAR2) RETURN NUMBER,
+                                                      MEMBER FUNCTION GetHeaderValue(p_header_key VARCHAR2)RETURN VARCHAR2
+                                                );
+                                                /
+                                                create or replace type body REBUS_MESSAGE_V2 is
+  
+                                                  -- Member procedures and functions
+                                                  MEMBER FUNCTION ContainsHeader(p_header_key VARCHAR2) RETURN NUMBER
+                                                  IS       
+                                                  v_ContainsHeader NUMBER ;
+                                                  BEGIN
+                                                    SELECT 1 INTO v_ContainsHeader 
+                                                    FROM TABLE(HEADERS) H
+                                                    WHERE H.KEY = p_header_key;
+    
+                                                    IF v_ContainsHeader <> 1
+                                                    THEN
+                                                      v_ContainsHeader := 0;
+                                                    END IF;
+         
+                                                    RETURN v_ContainsHeader;
+                                                  END; 
+  
+                                                  MEMBER FUNCTION GetHeaderValue(p_header_key VARCHAR2)RETURN VARCHAR2
+                                                  IS       
+                                                  v_HeaderValue VARCHAR2(4000);
+                                                  BEGIN
+                                                    SELECT H.VALUE INTO v_HeaderValue 
+                                                    FROM TABLE(HEADERS) H
+                                                    WHERE H.KEY = p_header_key;
+     
+                                                    RETURN v_HeaderValue;
+                                                  END; 
+  
+                                                end;
+                                                /';
+
+                            EXECUTE IMMEDIATE 'create or replace package PKG_REBUS is
+                                                  TYPE VARCHAR2_ARRAY IS TABLE OF VARCHAR2(4000)  -- Associative array type
+                                                       INDEX BY PLS_INTEGER;      
+
+                                                  PROCEDURE P_Enqueue_Rebus_Msg
+                                                  (
+                                                       p_Queue_Name         IN    VARCHAR2,
+                                                       p_EO_Visibility      IN    BINARY_INTEGER,       
+                                                       p_EO_Transformation  IN    VARCHAR2,
+                                                       p_EO_Delivery_Mode   IN    PLS_INTEGER,
+                                                       p_MP_Priority        IN    BINARY_INTEGER,
+                                                       p_MP_Delay           IN    BINARY_INTEGER,
+                                                       p_MP_Expiration      IN    BINARY_INTEGER,
+                                                       p_Headers_Keys       IN    VARCHAR2_ARRAY,
+                                                       p_Headers_Values     IN    VARCHAR2_ARRAY,
+                                                       p_Body_Raw           IN    RAW,
+                                                       p_Body_Blob          IN    BLOB
+                                                  );
+  
+                                                  PROCEDURE P_Dequeue_Rebus_Msg
+                                                  (
+                                                       p_Queue_Name         IN    VARCHAR2,
+                                                       p_DO_Consumers_Names IN    VARCHAR2_ARRAY,
+                                                       p_DO_Visibility      IN    BINARY_INTEGER,
+                                                       p_DO_Wait            IN    BINARY_INTEGER, 
+                                                       p_DO_Transformation  IN    VARCHAR2,
+                                                       p_DO_Delivery_Mode   IN    PLS_INTEGER,       
+                                                       p_Headers_Keys       OUT   VARCHAR2_ARRAY,
+                                                       p_Headers_Values     OUT   VARCHAR2_ARRAY,
+                                                       p_Body_Raw           OUT   RAW,
+                                                       p_Body_Blob          OUT   BLOB
+                                                   );
+
+                                                end PKG_REBUS;
+                                                /
+                                                create or replace package body PKG_REBUS is
+
+                                                   PROCEDURE P_Enqueue_Rebus_Msg
+                                                   (
+                                                       p_Queue_Name         IN    VARCHAR2,
+                                                       p_EO_Visibility      IN    BINARY_INTEGER,       
+                                                       p_EO_Transformation  IN    VARCHAR2,
+                                                       p_EO_Delivery_Mode   IN    PLS_INTEGER,
+                                                       p_MP_Priority        IN    BINARY_INTEGER,
+                                                       p_MP_Delay           IN    BINARY_INTEGER,
+                                                       p_MP_Expiration      IN    BINARY_INTEGER,
+                                                       p_Headers_Keys       IN    VARCHAR2_ARRAY,
+                                                       p_Headers_Values     IN    VARCHAR2_ARRAY,
+                                                       p_Body_Raw           IN    RAW,
+                                                       p_Body_Blob          IN    BLOB
+                                                   ) IS
+                                                      v_Enqueue_Options     dbms_aq.enqueue_options_t;
+                                                      v_Message_Properties  dbms_aq.message_properties_t;
+                                                      v_message_handle      RAW(16);
+                                                      v_headers             rebus_msg_headers;
+                                                   BEGIN
+                                                      v_Enqueue_Options.visibility      := p_EO_Visibility;
+                                                      v_Enqueue_Options.delivery_mode   := p_EO_Delivery_Mode;
+                                                      v_Enqueue_Options.transformation  := p_EO_Transformation;
+
+                                                      v_Message_Properties.priority     := p_MP_Priority;
+                                                      v_Message_Properties.delay        := p_MP_Delay;
+                                                      v_Message_Properties.expiration   := p_MP_Expiration;
+        
+                                                      v_headers                         := rebus_msg_headers();
+                                                      v_headers.extend(p_Headers_Keys.count);
+
+                                                      FOR i IN 1..p_Headers_Keys.count LOOP
+                                                        v_headers(i) := rebus_msg_header(p_Headers_Keys(i), p_Headers_Values(i));
+                                                      END LOOP;                    
+
+                                                      DBMS_AQ.ENQUEUE(
+                                                          QUEUE_NAME => p_Queue_Name,
+                                                          ENQUEUE_OPTIONS => v_Enqueue_Options,
+                                                          MESSAGE_PROPERTIES => v_Message_Properties,
+                                                          PAYLOAD => new REBUS_MESSAGE_V2(v_headers, p_Body_Raw, p_Body_Blob),
+                                                          MSGID => v_message_handle);
+                                                   END P_Enqueue_Rebus_Msg;
+   
+                                                   PROCEDURE P_Dequeue_Rebus_Msg
+                                                   (
+                                                       p_Queue_Name         IN    VARCHAR2,
+                                                       p_DO_Consumers_Names IN    VARCHAR2_ARRAY,
+                                                       p_DO_Visibility      IN    BINARY_INTEGER,
+                                                       p_DO_Wait            IN    BINARY_INTEGER, 
+                                                       p_DO_Transformation  IN    VARCHAR2,
+                                                       p_DO_Delivery_Mode   IN    PLS_INTEGER,       
+                                                       p_Headers_Keys       OUT   VARCHAR2_ARRAY,
+                                                       p_Headers_Values     OUT   VARCHAR2_ARRAY,
+                                                       p_Body_Raw           OUT   RAW,
+                                                       p_Body_Blob          OUT   BLOB
+                                                   ) IS
+                                                      v_Dequeue_Options     dbms_aq.DEQUEUE_OPTIONS_T;
+                                                      v_Message_Properties  dbms_aq.message_properties_t;
+                                                      v_Message_Handle      RAW(16);
+                                                      v_Payload             REBUS_MESSAGE_V2;
+                                                      v_Agent_List          DBMS_AQ.AQ$_AGENT_LIST_T;
+                                                      v_Agent               SYS.AQ$_AGENT;
+                                                   BEGIN
+                                                      v_Dequeue_Options.visibility      := p_DO_Visibility;
+                                                      v_Dequeue_Options.delivery_mode   := p_DO_Delivery_Mode;
+                                                      v_Dequeue_Options.transformation  := p_DO_Transformation;
+                                                      v_Dequeue_Options.WAIT            := p_DO_Wait;
+    
+                                                      IF p_DO_Consumers_Names IS NULL OR 
+                                                         p_DO_Consumers_Names.count = 0 OR 
+                                                         p_DO_Consumers_Names(1) IS NULL
+                                                      THEN
+                                                        DBMS_AQ.DEQUEUE(
+                                                            QUEUE_NAME => p_Queue_Name,
+                                                            DEQUEUE_OPTIONS => v_Dequeue_Options,
+                                                            MESSAGE_PROPERTIES => v_Message_Properties,
+                                                            PAYLOAD => v_Payload,
+                                                            MSGID => v_Message_Handle);
+    
+                                                        FOR i IN 1..v_Payload.HEADERS.count LOOP
+                                                          p_Headers_Keys(i) := v_Payload.HEADERS(i).KEY;
+                                                          p_Headers_Values(i) := v_Payload.HEADERS(i).VALUE;
+                                                        END LOOP;  
+                                                
+                                                        p_Body_Raw       := v_Payload.BODY_RAW;
+                                                        p_Body_Blob      := v_Payload.BODY_BLOB;
+                                                      ELSE      
+                                                        FOR i IN 1..p_DO_Consumers_Names.count LOOP
+                                                          v_Agent_List(i) := SYS.AQ$_AGENT(p_DO_Consumers_Names(i), p_Queue_Name, NULL);
+                                                        END LOOP;         
+
+                                                        DBMS_AQ.LISTEN (
+                                                            agent_list => v_Agent_List,
+                                                            wait => p_DO_Wait,
+                                                            agent => v_Agent);
+      
+                                                        IF v_Agent IS NOT NULL
+                                                        THEN
+                                                          v_Dequeue_Options.CONSUMER_NAME   := v_Agent.name;
+                            
+                                                          DBMS_AQ.DEQUEUE(
+                                                              QUEUE_NAME => p_Queue_Name,
+                                                              DEQUEUE_OPTIONS => v_Dequeue_Options,
+                                                              MESSAGE_PROPERTIES => v_Message_Properties,
+                                                              PAYLOAD => v_Payload,
+                                                              MSGID => v_Message_Handle);
+        
+                                                          FOR i IN 1..v_Payload.HEADERS.count LOOP
+                                                            p_Headers_Keys(i) := v_Payload.HEADERS(i).KEY;
+                                                            p_Headers_Values(i) := v_Payload.HEADERS(i).VALUE;
+                                                          END LOOP;  
+        
+                                                          p_Headers_Keys(v_Payload.HEADERS.count + 1) := 'rbs2-consumer-name';
+                                                          p_Headers_Values(v_Payload.HEADERS.count + 1) := v_Agent.name;
+                                                                
+                                                          p_Body_Raw       := v_Payload.BODY_RAW;
+                                                          p_Body_Blob      := v_Payload.BODY_BLOB;
+                                                        END IF;     
+                                                      END IF;     
+                                                   END P_Dequeue_Rebus_Msg;
+  
+                                                end PKG_REBUS;
+                                                /';
                         END IF;
                     END;
                     ----
                     BEGIN
                     -- Call the procedure
                         sys.dbms_aqadm.create_queue_table(queue_table => '{options.TableName}',
-                                                        queue_payload_type => 'REBUS_MESSAGE', 
+                                                        queue_payload_type => 'REBUS_MESSAGE_V2', 
                                                         primary_instance => 1);
                                     
                         sys.dbms_aqadm.create_queue(queue_name => '{options.InputQueueName}',

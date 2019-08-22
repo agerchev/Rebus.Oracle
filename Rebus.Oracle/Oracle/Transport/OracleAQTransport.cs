@@ -1,23 +1,20 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Data;
-using System.Data.SqlClient;
-using System.Diagnostics;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using Oracle.ManagedDataAccess.Client;
+﻿using Oracle.ManagedDataAccess.Client;
 using Oracle.ManagedDataAccess.Types;
 using Rebus.Bus;
-using Rebus.Exceptions;
+using Rebus.Config;
 using Rebus.Extensions;
 using Rebus.Logging;
 using Rebus.Messages;
 using Rebus.Serialization;
-using Rebus.Threading;
 using Rebus.Time;
 using Rebus.Transport;
-using Rebus.Config;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Rebus.Oracle.Transport
 {
@@ -33,9 +30,6 @@ namespace Rebus.Oracle.Transport
         readonly OracleConnectionHelper _connectionHelper;
         readonly OracleAQTransportOptions _options;
         readonly ILog _log;
-        readonly string _sendCommandText;
-        readonly string _receiveCommandText;
-        
 
         /// <summary>
         /// Header key of message priority which happens to be supported by this transport
@@ -64,55 +58,6 @@ namespace Rebus.Oracle.Transport
 
             if (_options.DequeueOptions == null) throw new ArgumentNullException(nameof(_options.DequeueOptions));
             if (_options.EnqueueOptions == null) throw new ArgumentNullException(nameof(_options.EnqueueOptions));
-
-            _sendCommandText = $@"
-                    DECLARE
-                        enqueue_options     dbms_aq.enqueue_options_t;
-                        message_properties  dbms_aq.message_properties_t;
-                        message_handle      RAW(16);
-                    BEGIN
-
-                    enqueue_options.visibility      := {GetVisibility(_options.EnqueueOptions.Visibility)};
-                    enqueue_options.delivery_mode   := {GetEnqueueDeliveryMode(_options.EnqueueOptions.DeliveryMode)};
-                    enqueue_options.transformation  := '{_options.EnqueueOptions.Tranformation}';
-
-                    message_properties.priority     := :priority;
-                    message_properties.delay        := :delay;
-                    message_properties.expiration   := :expiration;
-
-                    DBMS_AQ.ENQUEUE(
-                        QUEUE_NAME => :queue_name,
-                        ENQUEUE_OPTIONS => enqueue_options,
-                        MESSAGE_PROPERTIES => message_properties,
-                        PAYLOAD => new REBUS_MESSAGE(:headers_raw, :headers_blob, :body_raw, :body_blob),
-                        MSGID => message_handle);
-                    END;";
-
-            _receiveCommandText = $@"
-                    DECLARE 
-                       dequeue_options      dbms_aq.DEQUEUE_OPTIONS_T;
-                       message_properties   dbms_aq.message_properties_t;
-                       payload              REBUS_MESSAGE;
-                       message_handle       RAW(16);
-                    BEGIN
-                        
-                    dequeue_options.visibility      := {GetVisibility(_options.DequeueOptions.Visibility)};
-                    dequeue_options.delivery_mode   := {GetDequeueDeliveryMode(_options.DequeueOptions.DeliveryMode)};
-                    dequeue_options.transformation  := '{_options.DequeueOptions.Tranformation}';
-                    dequeue_options.WAIT            := :wait;
-                        
-                        DBMS_AQ.DEQUEUE(
-                            QUEUE_NAME => :queue_name,
-                            DEQUEUE_OPTIONS => dequeue_options,
-                            MESSAGE_PROPERTIES => message_properties,
-                            PAYLOAD => payload,
-                            MSGID => message_handle);
-                        
-                        :headers_raw     := payload.HEADERS_RAW;
-                        :headers_blob    := payload.HEADERS_BLOB;
-                        :body_raw       := payload.BODY_RAW;
-                        :body_blob      := payload.BODY_BLOB;
-                    END; ";
         }
 
         /// <summary>It can be implemented in some time.</summary>
@@ -143,44 +88,61 @@ namespace Rebus.Oracle.Transport
         {
             using (var command = connection.Connection.CreateCommand())
             {
-                command.CommandText = _sendCommandText;
+                command.CommandText = "PKG_REBUS.P_Enqueue_Rebus_Msg";
 
-                command.CommandType = CommandType.Text;
+                command.CommandType = CommandType.StoredProcedure;
 
                 var headers = message.Headers.Clone();
 
                 var priority = GetMessagePriority(headers);
                 var delay = GetDelayInSeconds(headers);
                 var expiration = GetExpirationInSeconds(headers);
-
-                // must be last because the other functions on the headers might change them
-                var serializedHeaders = HeaderSerializer.Serialize(headers);
+                var headers_keys = headers.Select(h => h.Key).ToArray();
+                var headers_values = headers.Select(h => h.Value).ToArray();
 
                 command.BindByName = true;
 
-                command.Parameters.Add(new OracleParameter("priority", OracleDbType.Int32, priority, ParameterDirection.Input));
-                command.Parameters.Add(new OracleParameter("delay", OracleDbType.Int32, delay, ParameterDirection.Input));
-                command.Parameters.Add(new OracleParameter("expiration", OracleDbType.Int32, expiration, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_Queue_Name", OracleDbType.Varchar2, destinationAddress, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_EO_Visibility", OracleDbType.Byte, GetVisibility(_options.EnqueueOptions.Visibility), ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_EO_Transformation", OracleDbType.Varchar2, _options.EnqueueOptions.Tranformation, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_EO_Delivery_Mode", OracleDbType.Byte, GetEnqueueDeliveryMode(_options.EnqueueOptions.DeliveryMode), ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_MP_Priority", OracleDbType.Int32, priority, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_MP_Delay", OracleDbType.Int32, delay, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_MP_Expiration", OracleDbType.Int32, expiration, ParameterDirection.Input));
 
-                command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, destinationAddress, ParameterDirection.Input));
-
-                bool storeHeaderInRaw = serializedHeaders.Length <= 2000 && !_options.ForceBlobStore;
                 bool storeBodyInRaw = message.Body.Length <= 2000 && !_options.ForceBlobStore;
 
-                command.Parameters.Add(new OracleParameter("headers_raw", OracleDbType.Raw, storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
-                command.Parameters.Add(new OracleParameter("headers_blob", OracleDbType.Blob, !storeHeaderInRaw ? serializedHeaders : null, ParameterDirection.Input));
+                var headerKeysParam = command.Parameters.Add(new OracleParameter("p_Headers_Keys", OracleDbType.Varchar2));
+                headerKeysParam.Direction = System.Data.ParameterDirection.Input;
+                headerKeysParam.CollectionType = OracleCollectionType.PLSQLAssociativeArray;
+                headerKeysParam.Value = headers_keys;
+                headerKeysParam.Size = headers_keys.Count();
+                headerKeysParam.ArrayBindSize = headers_keys.Select(key => key.Length).ToArray();
+                headerKeysParam.ArrayBindStatus = Enumerable.Repeat(OracleParameterStatus.Success, headers_keys.Count()).ToArray();
 
-                command.Parameters.Add(new OracleParameter("body_raw", OracleDbType.Raw, storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
-                command.Parameters.Add(new OracleParameter("body_blob", OracleDbType.Blob, !storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
+                var headerValuesParam = command.Parameters.Add(new OracleParameter("p_Headers_Values", OracleDbType.Varchar2));
+                headerValuesParam.Direction = System.Data.ParameterDirection.Input;
+                headerValuesParam.CollectionType = OracleCollectionType.PLSQLAssociativeArray;
+                headerValuesParam.Value = headers_values;
+                headerValuesParam.Size = headers_values.Count();
+                headerValuesParam.ArrayBindSize = headers_values.Select(key => key.Length).ToArray();
+                headerValuesParam.ArrayBindStatus = Enumerable.Repeat(OracleParameterStatus.Success, headers_values.Count()).ToArray();
+
+
+                command.Parameters.Add(new OracleParameter("p_Body_Raw", OracleDbType.Raw, storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_Body_Blob", OracleDbType.Blob, !storeBodyInRaw ? message.Body : null, ParameterDirection.Input));
 
                 await command.ExecuteNonQueryAsync();
+
+                headerKeysParam.Dispose();
+                headerValuesParam.Dispose();
             }
         }
 
         /// <inheritdoc />
         public async Task<TransportMessage> Receive(ITransactionContext context, CancellationToken cancellationToken)
         {
-            OracleParameter headerRawParam, headerBlobParam, bodyRawParam, bodyBlobParam;
+            OracleParameter headerKeysParam, headerValuesParam, bodyRawParam, bodyBlobParam;
 
             var connection = await GetConnection(context);
 
@@ -188,40 +150,81 @@ namespace Rebus.Oracle.Transport
 
             using (var command = connection.Connection.CreateCommand())
             {
-                command.CommandText = _receiveCommandText;
+                command.CommandText = "PKG_REBUS.P_Dequeue_Rebus_Msg";
 
-                command.CommandType = CommandType.Text;
+                command.CommandType = CommandType.StoredProcedure;
 
-                command.Parameters.Add(new OracleParameter("wait", OracleDbType.Int32, _options.DequeueOptions.Wait, ParameterDirection.Input));
-                command.Parameters.Add(new OracleParameter("queue_name", OracleDbType.Varchar2, _options.InputQueueName, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_Queue_Name", OracleDbType.Varchar2, _options.InputQueueName, ParameterDirection.Input));
 
-                command.Parameters.Add(headerRawParam = new OracleParameter("headers_raw", OracleDbType.Raw, ParameterDirection.Output));
-                headerRawParam.Size = 2000;
-                command.Parameters.Add(headerBlobParam = new OracleParameter("headers_blob", OracleDbType.Blob, ParameterDirection.Output));
+                var consumersNamesParam = command.Parameters.Add(new OracleParameter("p_DO_Consumers_Names", OracleDbType.Varchar2));
+                consumersNamesParam.Direction = System.Data.ParameterDirection.Input;
+                consumersNamesParam.CollectionType = OracleCollectionType.PLSQLAssociativeArray;
+                if (_options.DequeueOptions.ConsumersNames != null && _options.DequeueOptions.ConsumersNames.Count > 0)
+                {                    
+                    consumersNamesParam.Value = _options.DequeueOptions.ConsumersNames.ToArray();
+                    consumersNamesParam.Size = _options.DequeueOptions.ConsumersNames.Count();
+                    consumersNamesParam.ArrayBindSize = _options.DequeueOptions.ConsumersNames.Select(key => key.Length).ToArray();
+                    consumersNamesParam.ArrayBindStatus = Enumerable.Repeat(OracleParameterStatus.Success, _options.DequeueOptions.ConsumersNames.Count()).ToArray();
+                }
+                else
+                {
+                    consumersNamesParam.Value = DBNull.Value;
+                    consumersNamesParam.Size = 0;
+                    consumersNamesParam.ArrayBindSize = new int[] { 1 };
+                    consumersNamesParam.ArrayBindStatus = Enumerable.Repeat(OracleParameterStatus.Success, 1).ToArray();
+                }
 
-                command.Parameters.Add(bodyRawParam = new OracleParameter("body_raw", OracleDbType.Raw, ParameterDirection.Output));
+                command.Parameters.Add(new OracleParameter("p_DO_Visibility", OracleDbType.Byte, GetVisibility(_options.DequeueOptions.Visibility), ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_DO_Wait", OracleDbType.Int32, _options.DequeueOptions.Wait, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_DO_Transformation", OracleDbType.Varchar2, _options.DequeueOptions.Tranformation, ParameterDirection.Input));
+                command.Parameters.Add(new OracleParameter("p_DO_Delivery_Mode", OracleDbType.Byte, GetDequeueDeliveryMode(_options.DequeueOptions.DeliveryMode), ParameterDirection.Input));
+
+                command.Parameters.Add(headerKeysParam = new OracleParameter("p_Headers_Keys", OracleDbType.Varchar2, ParameterDirection.Output));
+                headerKeysParam.CollectionType = OracleCollectionType.PLSQLAssociativeArray;
+                headerKeysParam.Size = 100;
+                headerKeysParam.ArrayBindSize = Enumerable.Repeat(4000, 100).ToArray();
+                headerKeysParam.ArrayBindStatus = Enumerable.Repeat(OracleParameterStatus.Success, 100).ToArray();
+
+                command.Parameters.Add(headerValuesParam = new OracleParameter("p_Headers_Values", OracleDbType.Varchar2, ParameterDirection.Output));
+                headerValuesParam.CollectionType = OracleCollectionType.PLSQLAssociativeArray;
+                headerValuesParam.Size = 100;
+                headerValuesParam.ArrayBindSize = Enumerable.Repeat(4000, 100).ToArray();
+                headerValuesParam.ArrayBindStatus = Enumerable.Repeat(OracleParameterStatus.Success, 100).ToArray();
+
+                command.Parameters.Add(bodyRawParam = new OracleParameter("p_Body_Raw", OracleDbType.Raw, ParameterDirection.Output));
                 bodyRawParam.Size = 2000;
-                command.Parameters.Add(bodyBlobParam = new OracleParameter("body_blob", OracleDbType.Blob, ParameterDirection.Output));
+                command.Parameters.Add(bodyBlobParam = new OracleParameter("p_Body_Blob", OracleDbType.Blob, ParameterDirection.Output));
 
                 command.InitialLOBFetchSize = -1;
                 command.InitialLONGFetchSize = -1;
+
                 try
                 {
                     /*We are not using the cancellationToken, bacause the driver is not implementing true async support yet. On cancel the process hangs */
                     await command.ExecuteNonQueryAsync();
 
-                    byte[] header, body;
+                    Dictionary<string, string> header = new Dictionary<string, string>();
+                    byte[] body;
 
-                    OracleBinary headerBinary = (OracleBinary)headerRawParam.Value;
-                    OracleBlob headerBlob = (OracleBlob)headerBlobParam.Value;
+                    OracleString[] headerKeys = (OracleString[])headerKeysParam.Value;
+                    OracleString[] headerValues = (OracleString[])headerValuesParam.Value;
 
                     OracleBinary bodyBinary = ((OracleBinary)bodyRawParam.Value);
                     OracleBlob bodyBlob = (OracleBlob)bodyBlobParam.Value;
 
-                    header = headerBinary.IsNull ? headerBlob.Value : headerBinary.Value;
+                    for (int i = 0; i < headerKeys.Length; i++)
+                    {
+                        if (string.IsNullOrEmpty(headerKeys[i].Value))
+                        {
+                            break;
+                        }
+
+                        header.Add(headerKeys[i].Value, headerValues[i].Value);
+                    }
+
                     body = bodyBinary.IsNull ? bodyBlob.Value : bodyBinary.Value;
 
-                    receivedTransportMessage = new TransportMessage(HeaderSerializer.Deserialize(header), body);
+                    receivedTransportMessage = new TransportMessage(header, body);
                 }
                 catch (OracleException oracleException)
                 {
@@ -309,40 +312,47 @@ namespace Rebus.Oracle.Transport
 
             return (int)timeToBeReceived.TotalSeconds;
         }
-        
-        static string GetVisibility(AQVisibility visibility)
+
+        static int GetVisibility(AQVisibility visibility)
         {
             if (visibility == AQVisibility.Immediate)
-                return "DBMS_AQ.IMMEDIATE";
+                //DBMS_AQ.IMMEDIATE
+                return 1;
             else if (visibility == AQVisibility.OnCommit)
-                return "DBMS_AQ.ON_COMMIT";
+                //DBMS_AQ.ON_COMMIT
+                return 2;
             else
                 throw new NotImplementedException();
         }
 
-        static string GetEnqueueDeliveryMode(OracleAQEnqueueOptions.AQDeliveryMode deliveryMode)
+        static int GetEnqueueDeliveryMode(OracleAQEnqueueOptions.AQDeliveryMode deliveryMode)
         {
             switch (deliveryMode)
             {
                 case OracleAQEnqueueOptions.AQDeliveryMode.Buffered:
-                    return "DBMS_AQ.BUFFERED";
+                    //DBMS_AQ.BUFFERED
+                    return 2;
                 case OracleAQEnqueueOptions.AQDeliveryMode.Persistent:
-                    return "DBMS_AQ.PERSISTENT";
+                    //DBMS_AQ.PERSISTENT
+                    return 1;
                 default:
                     throw new NotImplementedException();
             }
         }
 
-        static string GetDequeueDeliveryMode(OracleAQDequeueOptions.AQDeliveryMode deliveryMode)
+        static int GetDequeueDeliveryMode(OracleAQDequeueOptions.AQDeliveryMode deliveryMode)
         {
             switch (deliveryMode)
             {
                 case OracleAQDequeueOptions.AQDeliveryMode.Buffered:
-                    return "DBMS_AQ.BUFFERED";
+                    //DBMS_AQ.BUFFERED
+                    return 2;
                 case OracleAQDequeueOptions.AQDeliveryMode.Persistent:
-                    return "DBMS_AQ.PERSISTENT";
+                    //DBMS_AQ.PERSISTENT
+                    return 1;
                 case OracleAQDequeueOptions.AQDeliveryMode.PersistentOrBuffered:
-                    return "DBMS_AQ.PERSISTENT_OR_BUFFERED";
+                    //DBMS_AQ.PERSISTENT_OR_BUFFERED
+                    return 3;
                 default:
                     throw new NotImplementedException();
             }

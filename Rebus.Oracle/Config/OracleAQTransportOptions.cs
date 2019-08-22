@@ -1,4 +1,6 @@
-﻿namespace Rebus.Config
+﻿using System.Collections.Generic;
+
+namespace Rebus.Config
 {
     public class OracleAQTransportOptions 
     {
@@ -112,5 +114,7 @@
         /// The dequeuer specifies the delivery mode of the messages it wishes to dequeue in the dequeue options. It can be BUFFERED or PERSISTENT or PERSISTENT_OR_BUFFERED. The message properties of the dequeued message indicate the delivery mode of the dequeued message. Array dequeue is only supported for buffered messages with an array size of '1'.
         /// </summary>
         public AQDeliveryMode DeliveryMode { get; set; }
+
+        public List<string> ConsumersNames { get; set; }
     }
 }
