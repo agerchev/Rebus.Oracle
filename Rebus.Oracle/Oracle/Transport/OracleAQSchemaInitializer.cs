@@ -91,30 +91,34 @@ namespace Rebus.Oracle.Transport
   
                                                   -- Member procedures and functions
                                                   MEMBER FUNCTION ContainsHeader(p_header_key VARCHAR2) RETURN NUMBER
-                                                  IS       
-                                                  v_ContainsHeader NUMBER ;
+                                                  IS
                                                   BEGIN
-                                                    SELECT 1 INTO v_ContainsHeader 
-                                                    FROM TABLE(HEADERS) H
-                                                    WHERE H.KEY = p_header_key;
-    
-                                                    IF v_ContainsHeader <> 1
-                                                    THEN
-                                                      v_ContainsHeader := 0;
-                                                    END IF;
+                                                    FOR i IN 1..HEADERS.Count LOOP
+                                                      BEGIN
+                                                        IF HEADERS(i).KEY = p_header_key
+                                                        THEN
+                                                          RETURN 1;
+                                                        END IF;
+                                                      END;
+                                                    END LOOP;
          
-                                                    RETURN v_ContainsHeader;
+                                                    RETURN 0;
                                                   END; 
   
                                                   MEMBER FUNCTION GetHeaderValue(p_header_key VARCHAR2)RETURN VARCHAR2
-                                                  IS       
-                                                  v_HeaderValue VARCHAR2(4000);
+                                                  IS        
                                                   BEGIN
-                                                    SELECT H.VALUE INTO v_HeaderValue 
-                                                    FROM TABLE(HEADERS) H
-                                                    WHERE H.KEY = p_header_key;
-     
-                                                    RETURN v_HeaderValue;
+    
+                                                    FOR i IN 1..HEADERS.Count LOOP
+                                                      BEGIN
+                                                        IF HEADERS(i).KEY = p_header_key
+                                                        THEN
+                                                          RETURN HEADERS(i).VALUE;
+                                                        END IF;
+                                                      END;
+                                                    END LOOP;
+        
+                                                    RETURN NULL;
                                                   END; 
   
                                                 end;
