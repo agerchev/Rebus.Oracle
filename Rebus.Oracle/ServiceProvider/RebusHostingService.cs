@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Hosting;
 using Rebus.Bus;
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +21,7 @@ namespace Rebus.ServiceProvider
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-        {
+        {            
             using (_serviceProvider.GetRequiredService<IBus>())
             {
                 try
