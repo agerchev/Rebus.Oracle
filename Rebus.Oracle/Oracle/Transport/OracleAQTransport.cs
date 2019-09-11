@@ -36,6 +36,11 @@ namespace Rebus.Oracle.Transport
         /// </summary>
         public const string MessagePriorityHeaderKey = "rbs2-msg-priority";
 
+        /// <summary>
+        /// Header key of AQ consumer name
+        /// </summary>
+        public const string AQConsumerNameHeaderKey = "rbs2-consumer-name";
+
         const int OperationCancelledNumber = 3980;
         const int TimeOutOrEndOfFethNumber = 25228;
         const int DBMS_AQ_NEVER = -1;
