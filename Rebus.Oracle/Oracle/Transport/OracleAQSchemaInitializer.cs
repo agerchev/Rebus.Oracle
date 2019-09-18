@@ -230,7 +230,7 @@ namespace Rebus.Oracle.Transport
     
                                                       IF p_DO_Consumers_Names IS NULL OR 
                                                          p_DO_Consumers_Names.count = 0 OR 
-                                                         p_DO_Consumers_Names(1) IS NULL
+                                                         p_DO_Consumers_Names(1) IS NULL 
                                                       THEN
                                                         DBMS_AQ.DEQUEUE(
                                                             QUEUE_NAME => p_Queue_Name,
@@ -256,7 +256,7 @@ namespace Rebus.Oracle.Transport
                                                             wait => p_DO_Wait,
                                                             agent => v_Agent);
       
-                                                        IF v_Agent IS NOT NULL
+                                                        IF v_Agent IS NOT NULL 
                                                         THEN
                                                           v_Dequeue_Options.CONSUMER_NAME   := v_Agent.name;
                             
@@ -278,7 +278,17 @@ namespace Rebus.Oracle.Transport
                                                           p_Body_Raw       := v_Payload.BODY_RAW;
                                                           p_Body_Blob      := v_Payload.BODY_BLOB;
                                                         END IF;     
-                                                      END IF;     
+                                                      END IF;
+                                                   EXCEPTION 
+                                                     WHEN OTHERS THEN
+                                                      IF SQLCODE = -25228 --ORA-25228 Timeout or End-of-Fetch Error When Dequeuing Messages
+                                                         OR SQLCODE = -25254 --ORA-25254: time-out in LISTEN while waiting for a message
+                                                      THEN      
+                                                        p_Body_Raw         := NULL;
+                                                        p_Body_Blob        := NULL;
+                                                      ELSE
+                                                         RAISE;
+                                                      END IF;    
                                                    END P_Dequeue_Rebus_Msg;
   
                                                 end PKG_REBUS;

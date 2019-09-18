@@ -41,8 +41,7 @@ namespace Rebus.Oracle.Transport
         /// </summary>
         public const string AQConsumerNameHeaderKey = "rbs2-consumer-name";
 
-        const int OperationCancelledNumber = 3980;
-        const int TimeOutOrEndOfFethNumber = 25228;
+        const int OperationCancelledNumber = 3980;       
         const int DBMS_AQ_NEVER = -1;
         const int DBMS_AQ_NO_DELAY = 0;
 
@@ -211,34 +210,33 @@ namespace Rebus.Oracle.Transport
                     Dictionary<string, string> header = new Dictionary<string, string>();
                     byte[] body;
 
-                    OracleString[] headerKeys = (OracleString[])headerKeysParam.Value;
-                    OracleString[] headerValues = (OracleString[])headerValuesParam.Value;
-
                     OracleBinary bodyBinary = ((OracleBinary)bodyRawParam.Value);
                     OracleBlob bodyBlob = (OracleBlob)bodyBlobParam.Value;
 
-                    for (int i = 0; i < headerKeys.Length; i++)
+                    if (bodyBinary.IsNull && bodyBlob.IsNull)
                     {
-                        if (string.IsNullOrEmpty(headerKeys[i].Value))
+                        receivedTransportMessage = null;
+                    }
+                    else
+                    {
+                        OracleString[] headerKeys = (OracleString[])headerKeysParam.Value;
+                        OracleString[] headerValues = (OracleString[])headerValuesParam.Value;
+
+                        for (int i = 0; i < headerKeys.Length; i++)
                         {
-                            break;
+                            if (string.IsNullOrEmpty(headerKeys[i].Value))
+                            {
+                                break;
+                            }
+
+                            header.Add(headerKeys[i].Value, headerValues[i].Value);
                         }
 
-                        header.Add(headerKeys[i].Value, headerValues[i].Value);
+                        body = bodyBinary.IsNull ? bodyBlob.Value : bodyBinary.Value;
+
+                        receivedTransportMessage = new TransportMessage(header, body);
                     }
-
-                    body = bodyBinary.IsNull ? bodyBlob.Value : bodyBinary.Value;
-
-                    receivedTransportMessage = new TransportMessage(header, body);
-                }
-                catch (OracleException oracleException)
-                {
-                    if (oracleException.Number == TimeOutOrEndOfFethNumber)
-                        receivedTransportMessage = null;
-                    else
-                        throw;
-                }
-
+                }               
                 catch (SqlException sqlException) when (sqlException.Number == OperationCancelledNumber)
                 {
                     // ADO.NET does not throw the right exception when the task gets cancelled - therefore we need to do this:
