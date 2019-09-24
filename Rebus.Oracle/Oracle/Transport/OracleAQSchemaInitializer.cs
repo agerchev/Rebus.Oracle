@@ -227,6 +227,7 @@ namespace Rebus.Oracle.Transport
                                                       v_Dequeue_Options.delivery_mode   := p_DO_Delivery_Mode;
                                                       v_Dequeue_Options.transformation  := p_DO_Transformation;
                                                       v_Dequeue_Options.WAIT            := p_DO_Wait;
+                                                      v_Dequeue_Options.NAVIGATION      := DBMS_AQ.FIRST_MESSAGE;
     
                                                       IF p_DO_Consumers_Names IS NULL OR 
                                                          p_DO_Consumers_Names.count = 0 OR 
