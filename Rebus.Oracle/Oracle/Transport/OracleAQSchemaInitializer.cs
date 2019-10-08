@@ -60,7 +60,7 @@ namespace Rebus.Oracle.Transport
                 _log.Info("Table {tableName} does not exist - it will be created with the queue now", options.TableName);
 
                 ExecuteCommands(connection, $@"
-                    DECLARE
+                     DECLARE
                         v_count NUMBER(10);
                     BEGIN
                         SELECT COUNT(*) INTO v_count
@@ -85,9 +85,9 @@ namespace Rebus.Oracle.Transport
                                                       BODY_BLOB       BLOB,
                                                       MEMBER FUNCTION ContainsHeader(p_header_key VARCHAR2) RETURN NUMBER,
                                                       MEMBER FUNCTION GetHeaderValue(p_header_key VARCHAR2)RETURN VARCHAR2
-                                                );
-                                                /
-                                                create or replace type body REBUS_MESSAGE_V2 is
+                                                );';
+                                                
+                            EXECUTE IMMEDIATE 'create or replace type body REBUS_MESSAGE_V2 is
   
                                                   -- Member procedures and functions
                                                   MEMBER FUNCTION ContainsHeader(p_header_key VARCHAR2) RETURN NUMBER
@@ -121,9 +121,8 @@ namespace Rebus.Oracle.Transport
                                                     RETURN NULL;
                                                   END; 
   
-                                                end;
-                                                /';
-
+                                                end;';
+                                                
                             EXECUTE IMMEDIATE 'create or replace package PKG_REBUS is
                                                   TYPE VARCHAR2_ARRAY IS TABLE OF VARCHAR2(4000)  -- Associative array type
                                                        INDEX BY PLS_INTEGER;      
@@ -157,9 +156,9 @@ namespace Rebus.Oracle.Transport
                                                        p_Body_Blob          OUT   BLOB
                                                    );
 
-                                                end PKG_REBUS;
-                                                /
-                                                create or replace package body PKG_REBUS is
+                                                end PKG_REBUS; ';
+                                                
+                            EXECUTE IMMEDIATE 'create or replace package body PKG_REBUS is
 
                                                    PROCEDURE P_Enqueue_Rebus_Msg
                                                    (
@@ -273,7 +272,7 @@ namespace Rebus.Oracle.Transport
                                                             p_Headers_Values(i) := v_Payload.HEADERS(i).VALUE;
                                                           END LOOP;  
         
-                                                          p_Headers_Keys(v_Payload.HEADERS.count + 1) := 'rbs2-consumer-name';
+                                                          p_Headers_Keys(v_Payload.HEADERS.count + 1) := ''rbs2-consumer-name'';
                                                           p_Headers_Values(v_Payload.HEADERS.count + 1) := v_Agent.name;
                                                                 
                                                           p_Body_Raw       := v_Payload.BODY_RAW;
@@ -292,8 +291,8 @@ namespace Rebus.Oracle.Transport
                                                       END IF;    
                                                    END P_Dequeue_Rebus_Msg;
   
-                                                end PKG_REBUS;
-                                                /';
+                                                end PKG_REBUS;';                    
+                         
                         END IF;
                     END;
                     ----
